@@ -1,0 +1,312 @@
+
+#!/bin/bash
+set -e
+# === Variables ===
+PROM_VERSION="2.53.0"
+NODE_EXPORTER_VERSION="1.7.0"
+GRAFANA_VERSION="11.0.0"
+ALERTMANAGER_VERSION="0.27.0"
+PD_INTEGRATION_KEY="YOUR_PAGERDUTY_INTEGRATION_KEY"
+# === Update system ===
+sudo apt-get update -y
+sudo apt-get install -y wget tar curl systemd
+# === Install Prometheus ===
+wget https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz
+tar xvf prometheus-${PROM_VERSION}.linux-amd64.tar.gz
+sudo mv prometheus-${PROM_VERSION}.linux-amd64 /opt/prometheus
+cat <<EOF | sudo tee /opt/prometheus/prometheus.yml
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+- job_name: 'node_exporter'
+    static_configs:
+      - targets: ['localhost:9100']
+EOF
+cat <<EOF | sudo tee /etc/systemd/system/prometheus.service
+[Unit]
+Description=Prometheus
+After=network.target
+[Service]
+ExecStart=/opt/prometheus/prometheus --config.file=/opt/prometheus/prometheus.yml
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable prometheus
+sudo systemctl start prometheus
+# === Install Node Exporter ===
+wget https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXPORTER_VERSION}/node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64.tar.gz
+tar xvf node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64.tar.gz
+sudo mv node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64 /opt/node_exporter
+cat <<EOF | sudo tee /etc/systemd/system/node_exporter.service
+[Unit]
+Description=Node Exporter
+After=network.target
+[Service]
+ExecStart=/opt/node_exporter/node_exporter
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable node_exporter
+sudo systemctl start node_exporter
+# === Install Grafana ===
+wget https://dl.grafana.com/oss/release/grafana-${GRAFANA_VERSION}.linux-amd64.tar.gz
+tar -zxvf grafana-${GRAFANA_VERSION}.linux-amd64.tar.gz
+sudo mv grafana-${GRAFANA_VERSION} /opt/grafana
+cat <<EOF | sudo tee /etc/systemd/system/grafana.service
+[Unit]
+Description=Grafana
+After=network.target
+[Service]
+ExecStart=/opt/grafana/bin/grafana-server --homepath=/opt/grafana
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable grafana
+sudo systemctl start grafana
+# === Install Alertmanager ===
+wget https://github.com/prometheus/alertmanager/releases/download/v${ALERTMANAGER_VERSION}/alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz
+tar xvf alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz
+sudo mv alertmanager-${ALERTMANAGER_VERSION}.linux-amd64 /opt/alertmanager
+cat <<EOF | sudo tee /opt/alertmanager/alertmanager.yml
+global:
+  resolve_timeout: 5m
+route:
+  receiver: 'pagerduty'
+receivers:
+- name: 'pagerduty'
+  pagerduty_configs:
+  - routing_key: '${PD_INTEGRATION_KEY}'
+EOF
+cat <<EOF | sudo tee /etc/systemd/system/alertmanager.service
+[Unit]
+Description=Alertmanager
+After=network.target
+[Service]
+ExecStart=/opt/alertmanager/alertmanager --config.file=/opt/alertmanager/alertmanager.yml
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable alertmanager
+sudo systemctl start alertmanager
+echo "✅ Installation complete!"
+echo "Prometheus: http://localhost:9090"
+echo "Node Exporter: http://localhost:9100"
+echo "Grafana: http://localhost:3000 (default admin/admin)"
+echo "Alertmanager: http://localhost:9093"
+🔑 Key Notes
+	• Replace YOUR_PAGERDUTY_INTEGRATION_KEY with your actual PagerDuty key.
+	• Grafana default login: admin/admin.
+	• Prometheus scrapes Node Exporter automatically.
+	• Alertmanager sends alerts to PagerDuty.
+👉 Would you like me to also extend this script to auto-provision Grafana dashboards and Prometheus alert rules so you get a ready-to-use monitoring stack immediately, instead of just the bare installations?
+yes
+Perfect — let’s extend that script so you get a ready-to-use monitoring stack with:
+	• Prometheus alert rules (CPU, memory, disk thresholds).
+	• Grafana dashboards (Node Exporter system metrics).
+	• Alertmanager → PagerDuty integration already wired.
+Here’s the enhanced single script:
+bash
+
+#!/bin/bash
+set -e
+# === Variables ===
+PROM_VERSION="2.53.0"
+NODE_EXPORTER_VERSION="1.7.0"
+GRAFANA_VERSION="11.0.0"
+ALERTMANAGER_VERSION="0.27.0"
+PD_INTEGRATION_KEY="YOUR_PAGERDUTY_INTEGRATION_KEY"
+# === Update system ===
+sudo apt-get update -y
+sudo apt-get install -y wget tar curl systemd jq
+# === Install Prometheus ===
+wget https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz
+tar xvf prometheus-${PROM_VERSION}.linux-amd64.tar.gz
+sudo mv prometheus-${PROM_VERSION}.linux-amd64 /opt/prometheus
+cat <<EOF | sudo tee /opt/prometheus/prometheus.yml
+global:
+  scrape_interval: 15s
+rule_files:
+  - "alert.rules.yml"
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+- job_name: 'node_exporter'
+    static_configs:
+      - targets: ['localhost:9100']
+EOF
+# === Prometheus Alert Rules ===
+cat <<EOF | sudo tee /opt/prometheus/alert.rules.yml
+groups:
+- name: system.rules
+  rules:
+  - alert: HighCPUUsage
+    expr: 100 - (avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 80
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: "High CPU usage detected"
+      description: "CPU usage > 80% for 2m"
+- alert: HighMemoryUsage
+    expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 80
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: "High Memory usage detected"
+      description: "Memory usage > 80% for 2m"
+- alert: LowDiskSpace
+    expr: (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"} * 100) < 20
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Low disk space"
+      description: "Disk space < 20% available"
+EOF
+cat <<EOF | sudo tee /etc/systemd/system/prometheus.service
+[Unit]
+Description=Prometheus
+After=network.target
+[Service]
+ExecStart=/opt/prometheus/prometheus --config.file=/opt/prometheus/prometheus.yml --web.enable-lifecycle
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable prometheus
+sudo systemctl restart prometheus
+# === Node Exporter ===
+wget https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXPORTER_VERSION}/node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64.tar.gz
+tar xvf node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64.tar.gz
+sudo mv node_exporter-${NODE_EXPORTER_VERSION}.linux-amd64 /opt/node_exporter
+cat <<EOF | sudo tee /etc/systemd/system/node_exporter.service
+[Unit]
+Description=Node Exporter
+After=network.target
+[Service]
+ExecStart=/opt/node_exporter/node_exporter
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable node_exporter
+sudo systemctl restart node_exporter
+# === Grafana ===
+wget https://dl.grafana.com/oss/release/grafana-${GRAFANA_VERSION}.linux-amd64.tar.gz
+tar -zxvf grafana-${GRAFANA_VERSION}.linux-amd64.tar.gz
+sudo mv grafana-${GRAFANA_VERSION} /opt/grafana
+cat <<EOF | sudo tee /etc/systemd/system/grafana.service
+[Unit]
+Description=Grafana
+After=network.target
+[Service]
+ExecStart=/opt/grafana/bin/grafana-server --homepath=/opt/grafana --config=/opt/grafana/conf/defaults.ini
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable grafana
+sudo systemctl restart grafana
+# === Provision Grafana Datasource ===
+sudo mkdir -p /opt/grafana/provisioning/datasources
+cat <<EOF | sudo tee /opt/grafana/provisioning/datasources/prometheus.yml
+apiVersion: 1
+datasources:
+- name: Prometheus
+  type: prometheus
+  access: proxy
+  url: http://localhost:9090
+  isDefault: true
+EOF
+# === Provision Grafana Dashboard ===
+sudo mkdir -p /opt/grafana/provisioning/dashboards
+cat <<EOF | sudo tee /opt/grafana/provisioning/dashboards/node_exporter.yml
+apiVersion: 1
+providers:
+- name: 'Node Exporter'
+  orgId: 1
+  folder: 'System Metrics'
+  type: file
+  options:
+    path: /opt/grafana/dashboards
+EOF
+sudo mkdir -p /opt/grafana/dashboards
+cat <<EOF | sudo tee /opt/grafana/dashboards/node_exporter.json
+{
+  "dashboard": {
+    "id": null,
+    "title": "Node Exporter Overview",
+    "panels": [
+      {
+        "title": "CPU Usage",
+        "type": "graph",
+        "targets": [
+          { "expr": "100 - (avg by(instance)(rate(node_cpu_seconds_total{mode=\"idle\"}[2m])) * 100)" }
+        ]
+      },
+      {
+        "title": "Memory Usage",
+        "type": "graph",
+        "targets": [
+          { "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100" }
+        ]
+      },
+      {
+        "title": "Disk Usage",
+        "type": "graph",
+        "targets": [
+          { "expr": "(node_filesystem_size_bytes{fstype!=\"tmpfs\"} - node_filesystem_avail_bytes{fstype!=\"tmpfs\"}) / node_filesystem_size_bytes{fstype!=\"tmpfs\"} * 100" }
+        ]
+      }
+    ]
+  }
+}
+EOF
+# === Alertmanager ===
+wget https://github.com/prometheus/alertmanager/releases/download/v${ALERTMANAGER_VERSION}/alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz
+tar xvf alertmanager-${ALERTMANAGER_VERSION}.linux-amd64.tar.gz
+sudo mv alertmanager-${ALERTMANAGER_VERSION}.linux-amd64 /opt/alertmanager
+cat <<EOF | sudo tee /opt/alertmanager/alertmanager.yml
+global:
+  resolve_timeout: 5m
+route:
+  receiver: 'pagerduty'
+receivers:
+- name: 'pagerduty'
+  pagerduty_configs:
+  - routing_key: '${PD_INTEGRATION_KEY}'
+EOF
+cat <<EOF | sudo tee /etc/systemd/system/alertmanager.service
+[Unit]
+Description=Alertmanager
+After=network.target
+[Service]
+ExecStart=/opt/alertmanager/alertmanager --config.file=/opt/alertmanager/alertmanager.yml
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable alertmanager
+sudo systemctl restart alertmanager
+echo "✅ Full monitoring stack ready!"
+echo "Prometheus: http://localhost:9090"
+echo "Node Exporter: http://localhost:9100"
+echo "Grafana: http://localhost:3000 (admin/admin)"
+echo "Alertmanager: http://localhost:9093"
